@@ -14,6 +14,8 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   const [error, setError] = useState(null);
   const [isInitiator, setIsInitiator] = useState(false);
   const [connectionStates, setConnectionStates] = useState(new Map());
+  const [callRequestTimeout, setCallRequestTimeout] = useState(null);
+  const [signalingTimeout, setSignalingTimeout] = useState(null);
 
   const localVideoRef = useRef();
   const peerConnectionsRef = useRef(new Map());
@@ -94,43 +96,65 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   }, [callType]);
 
   const cleanup = () => {
+    console.log('GroupVideoCall: Cleaning up...');
+    
+    // Clear timeouts
+    if (callRequestTimeout) {
+      clearTimeout(callRequestTimeout);
+      setCallRequestTimeout(null);
+    }
+    if (signalingTimeout) {
+      clearTimeout(signalingTimeout);
+      setSignalingTimeout(null);
+    }
+    
+    // Stop local stream
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
+      setLocalStream(null);
     }
+    
+    // Close all peer connections
     peerConnectionsRef.current.forEach(connection => connection.close());
     peerConnectionsRef.current.clear();
     pendingCandidatesRef.current.clear();
+    
+    console.log('GroupVideoCall: Cleanup completed');
   };
 
   const createPeerConnection = (targetUserId) => {
+    console.log('Creating new peer connection for:', targetUserId);
+    
     // Clean up existing connection if any
     const existingConnection = peerConnectionsRef.current.get(targetUserId);
     if (existingConnection) {
+      console.log('Cleaning up existing peer connection for:', targetUserId);
       existingConnection.close();
     }
 
-    const configuration = {
+    const peerConnection = new RTCPeerConnection({
       iceServers: getIceServers(),
       iceCandidatePoolSize: 10
-    };
-
-    const peerConnection = new RTCPeerConnection(configuration);
+    });
     
     // Add local stream tracks to peer connection
     if (localStream) {
       localStream.getTracks().forEach(track => {
+        console.log('Adding track to peer connection for:', targetUserId, 'track:', track.kind);
         peerConnection.addTrack(track, localStream);
       });
     }
 
     // Handle incoming streams
     peerConnection.ontrack = (event) => {
-      console.log('Received remote stream from:', targetUserId);
-      setRemoteStreams(prev => {
-        const newMap = new Map(prev);
-        newMap.set(targetUserId, event.streams[0]);
-        return newMap;
-      });
+      console.log('Received remote track from:', targetUserId, 'track:', event.track.kind);
+      if (event.streams && event.streams[0]) {
+        setRemoteStreams(prev => {
+          const newMap = new Map(prev);
+          newMap.set(targetUserId, event.streams[0]);
+          return newMap;
+        });
+      }
     };
 
     // Handle ICE candidates
@@ -151,7 +175,7 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
 
     // Handle connection state changes
     peerConnection.onconnectionstatechange = () => {
-      console.log('Connection state changed for', targetUserId, ':', peerConnection.connectionState);
+      console.log('Connection state for', targetUserId, ':', peerConnection.connectionState);
       setConnectionStates(prev => {
         const newMap = new Map(prev);
         newMap.set(targetUserId, peerConnection.connectionState);
@@ -159,23 +183,42 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
       });
       
       if (peerConnection.connectionState === 'connected') {
+        console.log('WebRTC connection established with:', targetUserId);
         setIsCallActive(true);
         setIsConnecting(false);
-        console.log('WebRTC connection established with:', targetUserId);
       } else if (peerConnection.connectionState === 'failed') {
+        console.log('WebRTC connection failed with:', targetUserId);
         setError('Connection failed with ' + targetUserId);
         setIsConnecting(false);
-      } else if (peerConnection.connectionState === 'closed') {
-        setIsCallActive(false);
-        setIsConnecting(false);
-      } else if (peerConnection.connectionState === 'connecting') {
-        setIsConnecting(true);
       }
     };
 
     // Handle signaling state changes
     peerConnection.onsignalingstatechange = () => {
       console.log('Signaling state for', targetUserId, ':', peerConnection.signalingState);
+      if (peerConnection.signalingState === 'stable') {
+        console.log('Signaling state is stable for', targetUserId, ', processing pending candidates');
+        // Process any pending candidates when we reach stable state
+        setTimeout(() => {
+          const pendingCandidates = pendingCandidatesRef.current.get(targetUserId) || [];
+          while (pendingCandidates.length > 0) {
+            const pending = pendingCandidates.shift();
+            if (pending.type === 'offer' && peerConnection.signalingState === 'stable') {
+              console.log('Processing pending offer for', targetUserId);
+              handleGroupCallSignal({ signal: pending.signal, from: targetUserId });
+            } else if (pending.type === 'answer' && peerConnection.signalingState === 'have-local-offer') {
+              console.log('Processing pending answer for', targetUserId);
+              handleGroupCallSignal({ signal: pending.signal, from: targetUserId });
+            } else if (pending.type === 'candidate' && peerConnection.remoteDescription) {
+              console.log('Processing pending candidate for', targetUserId);
+              peerConnection.addIceCandidate(new RTCIceCandidate(pending.candidate))
+                .then(() => console.log('Added pending candidate for', targetUserId))
+                .catch(err => console.error('Error adding pending candidate for', targetUserId, ':', err));
+            }
+          }
+          pendingCandidatesRef.current.set(targetUserId, pendingCandidates);
+        }, 100);
+      }
     };
 
     // Handle ICE connection state changes
@@ -184,6 +227,7 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
     };
 
     peerConnectionsRef.current.set(targetUserId, peerConnection);
+    console.log('Peer connection created successfully for:', targetUserId);
     return peerConnection;
   };
 
@@ -196,39 +240,60 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
 
   const handleGroupCallAccepted = async (data) => {
     console.log('Group call accepted by:', data.from);
-    setIsConnecting(true);
-    setIsInitiator(false);
     
-    const peerConnection = createPeerConnection(data.from);
+    // Clear the timeout since we got a response
+    if (callRequestTimeout) {
+      clearTimeout(callRequestTimeout);
+      setCallRequestTimeout(null);
+    }
+    
+    setIsConnecting(true);
+    setIsInitiator(true);
+    
+    // Only create peer connection if it doesn't exist
+    if (!peerConnectionsRef.current.get(data.from)) { // Use get(data.from) to check if connection exists
+      createPeerConnection(data.from);
+    }
+    
+    // Set a timeout for signaling
+    const timeout = setTimeout(() => {
+      console.log('Signaling timeout - connection taking too long');
+      setError('Connection is taking too long. Please try again.');
+      setIsConnecting(false);
+    }, 15000); // 15 seconds timeout for signaling
+    setSignalingTimeout(timeout);
     
     try {
-      console.log('Creating offer for group call to:', data.from);
-      const offer = await peerConnection.createOffer({
+      console.log('Creating offer for accepted group call');
+      const offer = await peerConnectionsRef.current.get(data.from).createOffer({ // Use get(data.from) to get the peer connection
         offerToReceiveAudio: true,
         offerToReceiveVideo: callType === 'video'
       });
       
-      if (peerConnection.signalingState === 'stable') {
-        await peerConnection.setLocalDescription(offer);
-        
-        // Wait a bit before sending the offer to ensure proper state
-        setTimeout(() => {
-          if (socketRef.current && socketRef.current.connected) {
-            socketRef.current.emit('groupCallSignal', {
-              signal: { type: 'offer', sdp: offer.sdp },
-              to: data.from,
-              roomId: room._id
-            });
-          } else {
-            console.error('GroupVideoCall: Cannot send offer - socket not available');
-          }
-        }, 100);
-      } else {
-        console.warn('Skipping setLocalDescription(offer): wrong state:', peerConnection.signalingState);
-      }
+      await peerConnectionsRef.current.get(data.from).setLocalDescription(offer); // Use get(data.from) to get the peer connection
+      console.log('Local description set to offer');
+      
+      // Wait a bit before sending the offer to ensure proper state
+      setTimeout(() => {
+        if (socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit('groupCallSignal', {
+            signal: { type: 'offer', sdp: offer.sdp },
+            to: data.from,
+            roomId: room._id
+          });
+          console.log('Offer sent to:', data.from);
+        } else {
+          console.error('GroupVideoCall: Cannot send offer - socket not available');
+        }
+      }, 100);
+      
     } catch (err) {
       console.error('Error creating offer:', err);
-      setError('Failed to create call offer');
+      setError('Failed to create call offer: ' + err.message);
+      if (signalingTimeout) {
+        clearTimeout(signalingTimeout);
+        setSignalingTimeout(null);
+      }
     }
   };
 
@@ -243,10 +308,10 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   };
 
   const handleGroupCallSignal = async (data) => {
-    const peerConnection = peerConnectionsRef.current.get(data.from);
+    let peerConnection = peerConnectionsRef.current.get(data.from);
     if (!peerConnection) {
-      console.log('No peer connection available for:', data.from);
-      return;
+      console.log('No peer connection available for:', data.from, 'creating one');
+      peerConnection = createPeerConnection(data.from);
     }
 
     try {
@@ -258,19 +323,24 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
         if (peerConnection.signalingState === 'stable') {
           console.log('Setting remote description (offer) for', data.from);
           await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+          console.log('Remote description set to offer for', data.from);
           
           console.log('Creating answer for', data.from);
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
+          console.log('Local description set to answer for', data.from);
           
           // Add any pending candidates
           const pendingCandidates = pendingCandidatesRef.current.get(data.from) || [];
           while (pendingCandidates.length > 0) {
             const candidate = pendingCandidates.shift();
-            try {
-              await peerConnection.addIceCandidate(candidate);
-            } catch (err) {
-              console.error('Error adding pending candidate:', err);
+            if (candidate.type === 'candidate') {
+              try {
+                await peerConnection.addIceCandidate(candidate);
+                console.log('Added pending candidate for', data.from);
+              } catch (err) {
+                console.error('Error adding pending candidate:', err);
+              }
             }
           }
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
@@ -282,31 +352,44 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
               to: data.from,
               roomId: room._id
             });
+            console.log('Answer sent to', data.from);
           } else {
             console.error('GroupVideoCall: Cannot send answer - socket not available');
           }
         } else {
-          console.warn('Ignoring offer: not in stable state for', data.from);
+          console.warn('Ignoring offer: not in stable state for', data.from, 'current state:', peerConnection.signalingState);
+          // Store the offer for later if we're not in stable state
+          const pendingCandidates = pendingCandidatesRef.current.get(data.from) || [];
+          pendingCandidates.push({ type: 'offer', signal });
+          pendingCandidatesRef.current.set(data.from, pendingCandidates);
         }
       } else if (signal.type === 'answer') {
         // Handle answer
         console.log('Setting remote description (answer) for', data.from);
         if (peerConnection.signalingState === 'have-local-offer') {
           await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+          console.log('Remote description set to answer for', data.from);
           
           // Add any pending candidates
           const pendingCandidates = pendingCandidatesRef.current.get(data.from) || [];
           while (pendingCandidates.length > 0) {
             const candidate = pendingCandidates.shift();
-            try {
-              await peerConnection.addIceCandidate(candidate);
-            } catch (err) {
-              console.error('Error adding pending candidate:', err);
+            if (candidate.type === 'candidate') {
+              try {
+                await peerConnection.addIceCandidate(candidate);
+                console.log('Added pending candidate for', data.from);
+              } catch (err) {
+                console.error('Error adding pending candidate:', err);
+              }
             }
           }
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
         } else {
-          console.warn('Skipping setRemoteDescription(answer): wrong signaling state', peerConnection.signalingState);
+          console.warn('Skipping setRemoteDescription(answer): wrong signaling state', peerConnection.signalingState, 'for', data.from);
+          // Store the answer for later if we're not in the right state
+          const pendingCandidates = pendingCandidatesRef.current.get(data.from) || [];
+          pendingCandidates.push({ type: 'answer', signal });
+          pendingCandidatesRef.current.set(data.from, pendingCandidates);
         }
       } else if (signal.type === 'candidate') {
         // Handle ICE candidate
@@ -314,13 +397,14 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
         if (peerConnection.remoteDescription) {
           try {
             await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            console.log('ICE candidate added successfully for', data.from);
           } catch (err) {
             console.error('Error adding ICE candidate:', err);
           }
         } else {
-          console.log('Storing candidate for later for', data.from);
+          console.log('Storing candidate for later - no remote description yet for', data.from);
           const pendingCandidates = pendingCandidatesRef.current.get(data.from) || [];
-          pendingCandidates.push(new RTCIceCandidate(signal.candidate));
+          pendingCandidates.push({ type: 'candidate', candidate: signal.candidate });
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
         }
       }
