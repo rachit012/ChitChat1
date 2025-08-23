@@ -402,36 +402,15 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   };
 
   const acceptGroupCall = () => {
-    console.log('Accepting group call');
-    setIsIncomingCall(false);
-    setIsConnecting(true);
-    setIsInitiator(false);
-    
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('groupCallAccepted', {
-        roomId: room._id,
-        to: caller._id,
-        from: currentUser._id
-      });
-    } else {
-      console.error('GroupVideoCall: Cannot accept call - socket not available');
-      setError('Socket connection not available. Please refresh the page and try again.');
-    }
+    console.log('GroupVideoCall: Accept group call function called (this should not happen)');
+    // This function should not be called directly from GroupVideoCall
+    // CallManager handles the acceptance
   };
 
   const rejectGroupCall = () => {
-    console.log('Rejecting group call');
-    setIsIncomingCall(false);
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('groupCallRejected', {
-        roomId: room._id,
-        to: caller._id,
-        from: currentUser._id
-      });
-    } else {
-      console.error('GroupVideoCall: Cannot reject call - socket not available');
-    }
-    onClose();
+    console.log('GroupVideoCall: Reject group call function called (this should not happen)');
+    // This function should not be called directly from GroupVideoCall
+    // CallManager handles the rejection
   };
 
   const endGroupCall = () => {
@@ -477,9 +456,14 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   // Auto-initiate call if not incoming
   useEffect(() => {
     if (!isIncomingCall && !isCallActive && !isConnecting) {
+      console.log('GroupVideoCall: Auto-initiating group call (outgoing)');
       initiateGroupCall();
+    } else if (isIncomingCall) {
+      console.log('GroupVideoCall: Incoming call detected, setting up for incoming call');
+      // For incoming calls, we need to ensure the peer connections are ready
+      // but we don't initiate the call ourselves
     }
-  }, []);
+  }, [isIncomingCall]);
 
   if (error) {
     return (
@@ -498,32 +482,8 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
     );
   }
 
-  if (isIncomingCall) {
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 text-center">
-          <h3 className="text-xl font-semibold mb-2">Incoming Group {callType === 'video' ? 'Video' : 'Voice'} Call</h3>
-          <p className="text-gray-600 mb-2">{caller?.username || 'Unknown'}</p>
-          <p className="text-gray-500 mb-6">Room: {room?.name || 'Unknown Room'}</p>
-          <div className="flex gap-4">
-            <button
-              onClick={acceptGroupCall}
-              className="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700"
-            >
-              Accept
-            </button>
-            <button
-              onClick={rejectGroupCall}
-              className="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700"
-            >
-              Decline
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+  // Don't show incoming call dialog here - CallManager handles that
+  // Just show the video call interface
   return (
     <div className="fixed inset-0 bg-black flex flex-col z-50">
       {/* Remote Videos Grid */}

@@ -7,7 +7,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const [remoteStream, setRemoteStream] = useState(null);
   const [isCallActive, setIsCallActive] = useState(false);
   const [isIncomingCallState, setIsIncomingCallState] = useState(isIncomingCallProp);
-  const [caller, setCaller] = useState(isIncomingCallProp ? otherUser : null);
+  const [caller, setCaller] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -22,6 +22,15 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const socketRef = useRef();
   const pendingCandidatesRef = useRef([]);
   const { endCall: endCallContext } = useCallContext();
+
+  // Set caller based on incoming call state
+  useEffect(() => {
+    if (isIncomingCallProp) {
+      setCaller(otherUser);
+    } else {
+      setCaller(null);
+    }
+  }, [isIncomingCallProp, otherUser]);
 
   // Enhanced ICE servers configuration
   const getIceServers = () => {
@@ -418,35 +427,15 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   };
 
   const acceptCall = () => {
-    console.log('Accepting call');
-    setIsIncomingCallState(false);
-    setIsConnecting(true);
-    setIsInitiator(false);
-    createPeerConnection();
-    
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('callAccepted', {
-        to: caller._id,
-        from: currentUser._id
-      });
-    } else {
-      console.error('VideoCall: Cannot accept call - socket not available');
-      setError('Socket connection not available. Please refresh the page and try again.');
-    }
+    console.log('VideoCall: Accept call function called (this should not happen)');
+    // This function should not be called directly from VideoCall
+    // CallManager handles the acceptance
   };
 
   const rejectCall = () => {
-    console.log('Rejecting call');
-    setIsIncomingCallState(false);
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('callRejected', {
-        to: caller._id,
-        from: currentUser._id
-      });
-    } else {
-      console.error('VideoCall: Cannot reject call - socket not available');
-    }
-    onClose();
+    console.log('VideoCall: Reject call function called (this should not happen)');
+    // This function should not be called directly from VideoCall
+    // CallManager handles the rejection
   };
 
   const handleEndCall = () => {
@@ -493,9 +482,18 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   // Auto-initiate call if not incoming
   useEffect(() => {
     if (!isIncomingCallState && !isCallActive && !isConnecting) {
+      console.log('VideoCall: Auto-initiating call (outgoing)');
       initiateCall();
+    } else if (isIncomingCallState) {
+      console.log('VideoCall: Incoming call detected, setting up for incoming call');
+      // For incoming calls, we need to ensure the peer connection is created
+      // but we don't initiate the call ourselves
+      if (!peerConnectionRef.current) {
+        console.log('VideoCall: Creating peer connection for incoming call');
+        createPeerConnection();
+      }
     }
-  }, []);
+  }, [isIncomingCallState, isCallActive, isConnecting]);
 
   // Debug panel for troubleshooting
   const DebugPanel = () => {
@@ -535,31 +533,8 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     );
   }
 
-  if (isIncomingCallState) {
-    return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 text-center">
-          <h3 className="text-xl font-semibold mb-2">Incoming {callType === 'video' ? 'Video' : 'Voice'} Call</h3>
-          <p className="text-gray-600 mb-6">{caller?.username || 'Unknown'}</p>
-          <div className="flex gap-4">
-            <button
-              onClick={acceptCall}
-              className="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700"
-            >
-              Accept
-            </button>
-            <button
-              onClick={rejectCall}
-              className="flex-1 bg-red-600 text-white py-3 rounded-lg hover:bg-red-700"
-            >
-              Decline
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+  // Don't show incoming call dialog here - CallManager handles that
+  // Just show the video call interface
   return (
     <div className="fixed inset-0 bg-black flex flex-col z-50">
       {/* Debug Panel */}
@@ -586,6 +561,11 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
                 {connectionState === 'connected' && 'Connected!'}
                 {connectionState === 'failed' && 'Connection failed'}
               </p>
+              {isIncomingCallState && (
+                <p className="text-sm text-blue-400 mt-2">
+                  Incoming call from {caller?.username || 'Unknown'}
+                </p>
+              )}
             </div>
           </div>
         )}

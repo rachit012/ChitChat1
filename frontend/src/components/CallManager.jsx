@@ -6,6 +6,7 @@ import { useCallContext } from '../contexts/CallContext';
 
 const CallManager = ({ currentUser }) => {
   const [incomingCall, setIncomingCall] = useState(null);
+  const [activeCall, setActiveCall] = useState(null);
   const [socket, setSocket] = useState(null);
   const { isCallActive, startCall, endCall } = useCallContext();
 
@@ -69,33 +70,48 @@ const CallManager = ({ currentUser }) => {
 
         const handleCallAccepted = (data) => {
           console.log('CallManager: Received callAccepted event:', data);
-          startCall('video'); // or get the actual call type from data
+          // Start the call and set up the active call
+          startCall('video');
+          setActiveCall({
+            otherUser: { _id: data.from },
+            type: 'video',
+            isIncoming: false
+          });
         };
 
         const handleCallRejected = (data) => {
           console.log('CallManager: Received callRejected event:', data);
           setIncomingCall(null);
+          setActiveCall(null);
         };
 
         const handleCallEnded = (data) => {
           console.log('CallManager: Received callEnded event:', data);
           setIncomingCall(null);
+          setActiveCall(null);
           endCall();
         };
 
         const handleGroupCallAccepted = (data) => {
           console.log('CallManager: Received groupCallAccepted event:', data);
           startCall('video');
+          setActiveCall({
+            room: { _id: data.roomId },
+            type: 'video',
+            isIncoming: false
+          });
         };
 
         const handleGroupCallRejected = (data) => {
           console.log('CallManager: Received groupCallRejected event:', data);
           setIncomingCall(null);
+          setActiveCall(null);
         };
 
         const handleGroupCallEnded = (data) => {
           console.log('CallManager: Received groupCallEnded event:', data);
           setIncomingCall(null);
+          setActiveCall(null);
           endCall();
         };
 
@@ -143,13 +159,30 @@ const CallManager = ({ currentUser }) => {
           to: incomingCall.caller._id,
           from: currentUser._id
         });
+        
+        // Set up the active call for group call
+        setActiveCall({
+          room: { _id: incomingCall.roomId },
+          type: incomingCall.type,
+          isIncoming: true
+        });
       } else {
         // Handle individual call acceptance
         socket.emit('callAccepted', {
           to: incomingCall.caller._id,
           from: currentUser._id
         });
+        
+        // Set up the active call for individual call
+        setActiveCall({
+          otherUser: incomingCall.caller,
+          type: incomingCall.type,
+          isIncoming: true
+        });
       }
+      
+      // Start the call
+      startCall(incomingCall.type);
       setIncomingCall(null);
     } else {
       console.error('CallManager: Cannot accept call - socket not available or call not available');
@@ -173,9 +206,11 @@ const CallManager = ({ currentUser }) => {
         });
       }
       setIncomingCall(null);
+      setActiveCall(null);
     } else {
       console.error('CallManager: Cannot reject call - socket not available or call not available');
       setIncomingCall(null);
+      setActiveCall(null);
     }
   };
 
@@ -183,6 +218,12 @@ const CallManager = ({ currentUser }) => {
     setIncomingCall(null);
   };
 
+  const handleCloseActiveCall = () => {
+    setActiveCall(null);
+    endCall();
+  };
+
+  // Render incoming call dialog
   if (incomingCall) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -217,6 +258,33 @@ const CallManager = ({ currentUser }) => {
         </div>
       </div>
     );
+  }
+
+  // Render active call component
+  if (activeCall && isCallActive) {
+    if (activeCall.room) {
+      // Group call
+      return (
+        <GroupVideoCall
+          currentUser={currentUser}
+          room={activeCall.room}
+          callType={activeCall.type}
+          isIncomingCallProp={activeCall.isIncoming}
+          onClose={handleCloseActiveCall}
+        />
+      );
+    } else {
+      // Individual call
+      return (
+        <VideoCall
+          currentUser={currentUser}
+          otherUser={activeCall.otherUser}
+          callType={activeCall.type}
+          isIncomingCallProp={activeCall.isIncoming}
+          onClose={handleCloseActiveCall}
+        />
+      );
+    }
   }
 
   return null;
