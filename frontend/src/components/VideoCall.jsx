@@ -9,6 +9,8 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const [error, setError] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
+  const [hasCreatedOffer, setHasCreatedOffer] = useState(false);
+  const [hasCreatedAnswer, setHasCreatedAnswer] = useState(false);
 
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
@@ -129,6 +131,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      setHasCreatedOffer(true);
       
       socketRef.current.emit('callSignal', {
         signal: { type: 'offer', sdp: offer.sdp },
@@ -158,26 +161,39 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     }
 
     const { signal } = data;
+    const pc = peerConnectionRef.current;
     
     try {
       if (signal.type === 'offer') {
-        // Callee receives offer
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
-        
-        const answer = await peerConnectionRef.current.createAnswer();
-        await peerConnectionRef.current.setLocalDescription(answer);
-        
-        socketRef.current.emit('callSignal', {
-          signal: { type: 'answer', sdp: answer.sdp },
-          to: otherUser._id
-        });
+        // Only callee should handle offers
+        if (isIncomingCallProp && !hasCreatedAnswer && pc.signalingState === 'stable') {
+          console.log('Callee: Setting remote description (offer)');
+          await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          
+          console.log('Callee: Creating answer');
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          setHasCreatedAnswer(true);
+          
+          socketRef.current.emit('callSignal', {
+            signal: { type: 'answer', sdp: answer.sdp },
+            to: otherUser._id
+          });
+        } else {
+          console.log('Ignoring offer - wrong state or role');
+        }
       } else if (signal.type === 'answer') {
-        // Caller receives answer
-        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
+        // Only caller should handle answers
+        if (!isIncomingCallProp && hasCreatedOffer && pc.signalingState === 'have-local-offer') {
+          console.log('Caller: Setting remote description (answer)');
+          await pc.setRemoteDescription(new RTCSessionDescription(signal));
+        } else {
+          console.log('Ignoring answer - wrong state or role');
+        }
       } else if (signal.type === 'candidate') {
         // Handle ICE candidate
-        if (peerConnectionRef.current.remoteDescription) {
-          await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
         }
       }
     } catch (err) {
