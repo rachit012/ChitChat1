@@ -1,77 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { getSocket } from '../utils/socket';
 import VideoCall from './VideoCall';
-import GroupVideoCall from './GroupVideoCall';
-import { useCallContext } from '../contexts/CallContext';
 
 const CallManager = ({ currentUser }) => {
   const [incomingCall, setIncomingCall] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
   const [socket, setSocket] = useState(null);
-  const { isCallActive, startCall, endCall } = useCallContext();
 
   useEffect(() => {
     const initializeCallManager = async () => {
       try {
-        console.log('CallManager: Initializing...');
         const socketInstance = await getSocket();
         setSocket(socketInstance);
-        console.log('CallManager: Socket connected successfully');
 
-        console.log('CallManager: Setting up global call event listeners');
-
-        // Global call event listeners
+        // Handle incoming call requests
         const handleCallRequest = (data) => {
-          console.log('CallManager: Received callRequest event:', data);
-          console.log('CallManager: Current user ID:', currentUser._id);
-          console.log('CallManager: Caller ID:', data.caller._id);
-          console.log('CallManager: Is call active:', isCallActive);
-          
-          if (!isCallActive) {
-            console.log('CallManager: Setting incoming call state');
-            setIncomingCall({
-              caller: data.caller,
-              type: data.type,
-              isIncoming: true,
-              isGroupCall: false
-            });
-          } else {
-            console.log('CallManager: User is busy, sending busy signal');
-            // Send busy signal if already in a call
-            if (socketInstance && socketInstance.connected) {
-              socketInstance.emit('userBusy', {
-                to: data.caller._id,
-                from: currentUser._id
-              });
-            }
-          }
+          console.log('Received call request:', data);
+          setIncomingCall({
+            caller: data.caller,
+            type: data.type
+          });
         };
 
-        const handleGroupCallRequest = (data) => {
-          console.log('CallManager: Received groupCallRequest event:', data);
-          if (!isCallActive) {
-            setIncomingCall({
-              caller: data.caller,
-              type: data.type,
-              isIncoming: true,
-              isGroupCall: true,
-              roomId: data.roomId
-            });
-          } else {
-            // Send busy signal if already in a call
-            if (socketInstance && socketInstance.connected) {
-              socketInstance.emit('userBusy', {
-                to: data.caller._id,
-                from: currentUser._id
-              });
-            }
-          }
-        };
-
+        // Handle call accepted (for caller)
         const handleCallAccepted = (data) => {
-          console.log('CallManager: Received callAccepted event:', data);
-          // Start the call and set up the active call
-          startCall('video');
+          console.log('Call accepted:', data);
           setActiveCall({
             otherUser: { _id: data.from },
             type: 'video',
@@ -79,162 +32,81 @@ const CallManager = ({ currentUser }) => {
           });
         };
 
-        const handleCallRejected = (data) => {
-          console.log('CallManager: Received callRejected event:', data);
+        // Handle call rejected
+        const handleCallRejected = () => {
           setIncomingCall(null);
           setActiveCall(null);
         };
 
-        const handleCallEnded = (data) => {
-          console.log('CallManager: Received callEnded event:', data);
+        // Handle call ended
+        const handleCallEnded = () => {
           setIncomingCall(null);
           setActiveCall(null);
-          endCall();
-        };
-
-        const handleGroupCallAccepted = (data) => {
-          console.log('CallManager: Received groupCallAccepted event:', data);
-          startCall('video');
-          setActiveCall({
-            room: { _id: data.roomId },
-            type: 'video',
-            isIncoming: false
-          });
-        };
-
-        const handleGroupCallRejected = (data) => {
-          console.log('CallManager: Received groupCallRejected event:', data);
-          setIncomingCall(null);
-          setActiveCall(null);
-        };
-
-        const handleGroupCallEnded = (data) => {
-          console.log('CallManager: Received groupCallEnded event:', data);
-          setIncomingCall(null);
-          setActiveCall(null);
-          endCall();
         };
 
         // Set up event listeners
         socketInstance.on('callRequest', handleCallRequest);
-        socketInstance.on('groupCallRequest', handleGroupCallRequest);
         socketInstance.on('callAccepted', handleCallAccepted);
         socketInstance.on('callRejected', handleCallRejected);
         socketInstance.on('callEnded', handleCallEnded);
-        socketInstance.on('groupCallAccepted', handleGroupCallAccepted);
-        socketInstance.on('groupCallRejected', handleGroupCallRejected);
-        socketInstance.on('groupCallEnded', handleGroupCallEnded);
-
-        console.log('CallManager: Global call event listeners set up successfully');
 
         return () => {
-          console.log('CallManager: Cleaning up global call event listeners');
-          if (socketInstance) {
-            socketInstance.off('callRequest', handleCallRequest);
-            socketInstance.off('groupCallRequest', handleGroupCallRequest);
-            socketInstance.off('callAccepted', handleCallAccepted);
-            socketInstance.off('callRejected', handleCallRejected);
-            socketInstance.off('callEnded', handleCallEnded);
-            socketInstance.off('groupCallAccepted', handleGroupCallAccepted);
-            socketInstance.off('groupCallRejected', handleGroupCallRejected);
-            socketInstance.off('groupCallEnded', handleGroupCallEnded);
-          }
+          socketInstance.off('callRequest', handleCallRequest);
+          socketInstance.off('callAccepted', handleCallAccepted);
+          socketInstance.off('callRejected', handleCallRejected);
+          socketInstance.off('callEnded', handleCallEnded);
         };
       } catch (err) {
-        console.error('CallManager: Failed to initialize:', err);
+        console.error('CallManager initialization error:', err);
       }
     };
 
     if (currentUser && currentUser._id) {
       initializeCallManager();
     }
-  }, [currentUser?._id, isCallActive, startCall, endCall]);
+  }, [currentUser?._id]);
 
   const handleAcceptCall = () => {
-    if (incomingCall && socket && socket.connected) {
-      if (incomingCall.isGroupCall) {
-        // Handle group call acceptance
-        socket.emit('groupCallAccepted', {
-          roomId: incomingCall.roomId,
-          to: incomingCall.caller._id,
-          from: currentUser._id
-        });
-        
-        // Set up the active call for group call
-        setActiveCall({
-          room: { _id: incomingCall.roomId },
-          type: incomingCall.type,
-          isIncoming: true
-        });
-      } else {
-        // Handle individual call acceptance
-        socket.emit('callAccepted', {
-          to: incomingCall.caller._id,
-          from: currentUser._id
-        });
-        
-        // Set up the active call for individual call
-        setActiveCall({
-          otherUser: incomingCall.caller,
-          type: incomingCall.type,
-          isIncoming: true
-        });
-      }
+    if (incomingCall && socket) {
+      socket.emit('callAccepted', {
+        to: incomingCall.caller._id,
+        from: currentUser._id
+      });
       
-      // Start the call
-      startCall(incomingCall.type);
+      setActiveCall({
+        otherUser: incomingCall.caller,
+        type: incomingCall.type,
+        isIncoming: true
+      });
+      
       setIncomingCall(null);
-    } else {
-      console.error('CallManager: Cannot accept call - socket not available or call not available');
     }
   };
 
   const handleRejectCall = () => {
-    if (incomingCall && socket && socket.connected) {
-      if (incomingCall.isGroupCall) {
-        // Handle group call rejection
-        socket.emit('groupCallRejected', {
-          roomId: incomingCall.roomId,
-          to: incomingCall.caller._id,
-          from: currentUser._id
-        });
-      } else {
-        // Handle individual call rejection
-        socket.emit('callRejected', {
-          to: incomingCall.caller._id,
-          from: currentUser._id
-        });
-      }
-      setIncomingCall(null);
-      setActiveCall(null);
-    } else {
-      console.error('CallManager: Cannot reject call - socket not available or call not available');
-      setIncomingCall(null);
-      setActiveCall(null);
+    if (incomingCall && socket) {
+      socket.emit('callRejected', {
+        to: incomingCall.caller._id,
+        from: currentUser._id
+      });
     }
-  };
-
-  const handleCloseIncomingCall = () => {
     setIncomingCall(null);
+    setActiveCall(null);
   };
 
   const handleCloseActiveCall = () => {
     setActiveCall(null);
-    endCall();
   };
 
-  // Render incoming call dialog
+  // Show incoming call dialog
   if (incomingCall) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 text-center">
           <h3 className="text-xl font-semibold mb-2">
-            Incoming {incomingCall.isGroupCall ? 'Group ' : ''}{incomingCall.type === 'video' ? 'Video' : 'Voice'} Call
+            Incoming {incomingCall.type === 'video' ? 'Video' : 'Voice'} Call
           </h3>
-          <p className="text-gray-600 mb-2">{incomingCall.caller?.username || 'Unknown'}</p>
-          {incomingCall.isGroupCall && (
-            <p className="text-gray-500 mb-6">Room: {incomingCall.roomId || 'Unknown Room'}</p>
-          )}
+          <p className="text-gray-600 mb-6">{incomingCall.caller?.username || 'Unknown'}</p>
           <div className="flex gap-4">
             <button
               onClick={handleAcceptCall}
@@ -249,42 +121,22 @@ const CallManager = ({ currentUser }) => {
               Decline
             </button>
           </div>
-          <button
-            onClick={handleCloseIncomingCall}
-            className="mt-4 text-gray-500 hover:text-gray-700"
-          >
-            Close
-          </button>
         </div>
       </div>
     );
   }
 
-  // Render active call component
-  if (activeCall && isCallActive) {
-    if (activeCall.room) {
-      // Group call
-      return (
-        <GroupVideoCall
-          currentUser={currentUser}
-          room={activeCall.room}
-          callType={activeCall.type}
-          isIncomingCallProp={activeCall.isIncoming}
-          onClose={handleCloseActiveCall}
-        />
-      );
-    } else {
-      // Individual call
-      return (
-        <VideoCall
-          currentUser={currentUser}
-          otherUser={activeCall.otherUser}
-          callType={activeCall.type}
-          isIncomingCallProp={activeCall.isIncoming}
-          onClose={handleCloseActiveCall}
-        />
-      );
-    }
+  // Show active call
+  if (activeCall) {
+    return (
+      <VideoCall
+        currentUser={currentUser}
+        otherUser={activeCall.otherUser}
+        callType={activeCall.type}
+        isIncomingCallProp={activeCall.isIncoming}
+        onClose={handleCloseActiveCall}
+      />
+    );
   }
 
   return null;

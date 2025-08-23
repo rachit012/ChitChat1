@@ -1,560 +1,208 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getSocket } from '../utils/socket';
-import { useCallContext } from '../contexts/CallContext';
 
 const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isIncomingCallProp = false }) => {
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const [isCallActive, setIsCallActive] = useState(false);
-  const [isIncomingCallState, setIsIncomingCallState] = useState(isIncomingCallProp);
-  const [caller, setCaller] = useState(null);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState(null);
-  const [isInitiator, setIsInitiator] = useState(false);
-  const [connectionState, setConnectionState] = useState('new');
-  const [callRequestTimeout, setCallRequestTimeout] = useState(null);
-  const [signalingTimeout, setSignalingTimeout] = useState(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
 
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
   const peerConnectionRef = useRef();
   const socketRef = useRef();
-  const pendingCandidatesRef = useRef([]);
-  const { endCall: endCallContext } = useCallContext();
 
-  // Set caller based on incoming call state
+  // Simple ICE servers
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' }
+  ];
+
+  // Initialize call
   useEffect(() => {
-    if (isIncomingCallProp) {
-      setCaller(otherUser);
-    } else {
-      setCaller(null);
-    }
-  }, [isIncomingCallProp, otherUser]);
-
-  // Enhanced ICE servers configuration
-  const getIceServers = () => {
-    return [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' }
-    ];
-  };
-
-  useEffect(() => {
-    const initializeCall = async () => {
+    const initCall = async () => {
       try {
-        console.log('VideoCall: Initializing call...');
-        
-        // Get user media first
-        if (!localStream) {
-          try {
-            console.log('VideoCall: Requesting media access');
-            const stream = await navigator.mediaDevices.getUserMedia({
-              video: callType === 'video',
-              audio: true
-            });
-            setLocalStream(stream);
-
-            if (localVideoRef.current) {
-              localVideoRef.current.srcObject = stream;
-            }
-            console.log('VideoCall: Media access granted');
-          } catch (mediaErr) {
-            console.error('Media access error:', mediaErr);
-            if (mediaErr.name === 'NotReadableError') {
-              setError('Camera/microphone is already in use by another application. Please close other apps using your camera/microphone and try again.');
-            } else {
-              setError('Failed to access camera/microphone. Please check permissions.');
-            }
-            return;
-          }
+        // Get user media
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: callType === 'video',
+          audio: true
+        });
+        setLocalStream(stream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
         }
 
         // Connect to socket
-        console.log('VideoCall: Connecting to socket...');
         const socket = await getSocket();
         socketRef.current = socket;
-        console.log('VideoCall: Socket connected successfully');
 
-        // Set up socket event listeners
-        const setupEventListeners = () => {
-          socket.on('callAccepted', handleCallAccepted);
-          socket.on('callRejected', handleCallRejected);
-          socket.on('callEnded', handleCallEnded);
-          socket.on('callSignal', handleCallSignal);
-          socket.on('userBusy', handleUserBusy);
-          socket.on('callRequestSent', handleCallRequestSent);
-        };
+        // Set up event listeners
+        socket.on('callAccepted', handleCallAccepted);
+        socket.on('callRejected', handleCallRejected);
+        socket.on('callEnded', handleCallEnded);
+        socket.on('callSignal', handleCallSignal);
 
-        setupEventListeners();
-        console.log('VideoCall: Event listeners set up successfully');
+        // If outgoing call, initiate it
+        if (!isIncomingCallProp) {
+          initiateCall();
+        }
 
         return () => {
-          console.log('VideoCall: Cleaning up event listeners');
-          if (socket) {
-            socket.off('callAccepted', handleCallAccepted);
-            socket.off('callRejected', handleCallRejected);
-            socket.off('callEnded', handleCallEnded);
-            socket.off('callSignal', handleCallSignal);
-            socket.off('userBusy', handleUserBusy);
-            socket.off('callRequestSent', handleCallRequestSent);
-          }
+          socket.off('callAccepted', handleCallAccepted);
+          socket.off('callRejected', handleCallRejected);
+          socket.off('callEnded', handleCallEnded);
+          socket.off('callSignal', handleCallSignal);
         };
       } catch (err) {
-        console.error('VideoCall: Initialization error:', err);
-        setError('Failed to initialize call. Please check your connection and try again.');
+        console.error('Call initialization error:', err);
+        setError('Failed to start call: ' + err.message);
       }
     };
 
-    initializeCall();
+    initCall();
+  }, []);
 
-    return () => {
-      cleanup();
-    };
-  }, [callType]);
-
-  const cleanup = () => {
-    console.log('VideoCall: Cleaning up...');
-    
-    // Clear timeouts
-    if (callRequestTimeout) {
-      clearTimeout(callRequestTimeout);
-      setCallRequestTimeout(null);
-    }
-    if (signalingTimeout) {
-      clearTimeout(signalingTimeout);
-      setSignalingTimeout(null);
-    }
-    
-    // Stop local stream
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
-    }
-    
-    // Close peer connection
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
-    }
-    
-    // Clear pending candidates
-    pendingCandidatesRef.current = [];
-    
-    console.log('VideoCall: Cleanup completed');
-  };
-
+  // Create peer connection
   const createPeerConnection = () => {
-    console.log('Creating new peer connection');
+    const pc = new RTCPeerConnection({ iceServers });
     
-    // Clean up existing connection if any
-    if (peerConnectionRef.current) {
-      console.log('Cleaning up existing peer connection');
-      peerConnectionRef.current.close();
-    }
-    
-    const peerConnection = new RTCPeerConnection({
-      iceServers: getIceServers(),
-      iceCandidatePoolSize: 10
-    });
-
-    // Add local stream tracks to the peer connection
+    // Add local stream
     if (localStream) {
       localStream.getTracks().forEach(track => {
-        console.log('Adding track to peer connection:', track.kind);
-        peerConnection.addTrack(track, localStream);
+        pc.addTrack(track, localStream);
       });
     }
 
-    // Handle incoming tracks
-    peerConnection.ontrack = (event) => {
-      console.log('Received remote track:', event.track.kind);
-      if (event.streams && event.streams[0]) {
-        setRemoteStream(event.streams[0]);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
-        }
+    // Handle incoming stream
+    pc.ontrack = (event) => {
+      setRemoteStream(event.streams[0]);
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
       }
     };
 
     // Handle ICE candidates
-    peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('Sending ICE candidate');
-        if (socketRef.current && socketRef.current.connected) {
-          const targetUserId = isIncomingCallState ? caller?._id : otherUser?._id;
-          if (targetUserId) {
-            socketRef.current.emit('callSignal', {
-              signal: { type: 'candidate', candidate: event.candidate },
-              to: targetUserId
-            });
-          }
-        } else {
-          console.error('VideoCall: Cannot send ICE candidate - socket not available');
-        }
+    pc.onicecandidate = (event) => {
+      if (event.candidate && socketRef.current) {
+        socketRef.current.emit('callSignal', {
+          signal: { type: 'candidate', candidate: event.candidate },
+          to: otherUser._id
+        });
       }
     };
 
-    // Handle connection state changes
-    peerConnection.onconnectionstatechange = () => {
-      console.log('Connection state:', peerConnection.connectionState);
-      if (peerConnection.connectionState === 'connected') {
-        console.log('WebRTC connection established!');
+    // Handle connection state
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
         setIsCallActive(true);
         setIsConnecting(false);
-        setConnectionState('connected');
-        
-        // Clear signaling timeout since connection is established
-        if (signalingTimeout) {
-          clearTimeout(signalingTimeout);
-          setSignalingTimeout(null);
-        }
-      } else if (peerConnection.connectionState === 'failed') {
-        console.log('WebRTC connection failed');
-        setConnectionState('failed');
-        setError('Connection failed. Please try again.');
-        
-        // Clear signaling timeout since connection failed
-        if (signalingTimeout) {
-          clearTimeout(signalingTimeout);
-          setSignalingTimeout(null);
-        }
+      } else if (pc.connectionState === 'failed') {
+        setError('Connection failed');
+        setIsConnecting(false);
       }
     };
 
-    // Handle signaling state changes
-    peerConnection.onsignalingstatechange = () => {
-      console.log('Signaling state:', peerConnection.signalingState);
-      if (peerConnection.signalingState === 'stable') {
-        console.log('Signaling state is stable, processing pending candidates');
-        // Process any pending candidates when we reach stable state
-        setTimeout(() => {
-          while (pendingCandidatesRef.current.length > 0) {
-            const pending = pendingCandidatesRef.current.shift();
-            if (pending.type === 'offer' && peerConnection.signalingState === 'stable') {
-              console.log('Processing pending offer');
-              handleCallSignal({ signal: pending.signal, from: isIncomingCallState ? caller?._id : otherUser?._id });
-            } else if (pending.type === 'answer' && peerConnection.signalingState === 'have-local-offer') {
-              console.log('Processing pending answer');
-              handleCallSignal({ signal: pending.signal, from: isIncomingCallState ? caller?._id : otherUser?._id });
-            } else if (pending.type === 'candidate' && peerConnection.remoteDescription) {
-              console.log('Processing pending candidate');
-              peerConnection.addIceCandidate(new RTCIceCandidate(pending.candidate))
-                .then(() => console.log('Added pending candidate'))
-                .catch(err => console.error('Error adding pending candidate:', err));
-            }
-          }
-        }, 100);
-      }
-    };
-
-    // Handle ICE connection state changes
-    peerConnection.oniceconnectionstatechange = () => {
-      console.log('ICE connection state:', peerConnection.iceConnectionState);
-      if (peerConnection.iceConnectionState === 'connected') {
-        setConnectionState('connected');
-      } else if (peerConnection.iceConnectionState === 'failed') {
-        setConnectionState('failed');
-      }
-    };
-
-    peerConnectionRef.current = peerConnection;
-    console.log('Peer connection created successfully');
-    return peerConnection;
+    peerConnectionRef.current = pc;
+    return pc;
   };
 
-  const handleCallRequestSent = () => {
-    console.log('Call request sent successfully');
-    // Set a timeout to handle cases where the call request doesn't get a response
-    const timeout = setTimeout(() => {
-      console.log('Call request timeout - no response received');
-      setError('Call request timed out. The other user may be offline or not responding.');
-      setIsConnecting(false);
-    }, 30000); // 30 seconds timeout
-    
-    setCallRequestTimeout(timeout);
-  };
-
-  const handleCallAccepted = async (data) => {
-    console.log('Call accepted by:', data.from);
-    
-    // Only the caller should handle this event
-    if (isIncomingCallState) {
-      console.log('Ignoring callAccepted event - we are the callee');
-      return;
-    }
-    
-    // Clear the timeout since we got a response
-    if (callRequestTimeout) {
-      clearTimeout(callRequestTimeout);
-      setCallRequestTimeout(null);
-    }
+  // Initiate call (caller only)
+  const initiateCall = async () => {
+    if (!socketRef.current) return;
     
     setIsConnecting(true);
-    setIsInitiator(true);
+    socketRef.current.emit('callRequest', {
+      to: otherUser._id,
+      from: currentUser._id,
+      type: callType
+    });
+  };
+
+  // Handle call accepted (caller only)
+  const handleCallAccepted = async (data) => {
+    if (isIncomingCallProp) return; // Only caller handles this
     
-    // Only create peer connection if it doesn't exist
-    if (!peerConnectionRef.current) {
-      createPeerConnection();
-    }
-    
-    // Set a timeout for signaling
-    const timeout = setTimeout(() => {
-      console.log('Signaling timeout - connection taking too long');
-      setError('Connection is taking too long. Please try again.');
-      setIsConnecting(false);
-    }, 15000); // 15 seconds timeout for signaling
-    setSignalingTimeout(timeout);
+    const pc = createPeerConnection();
     
     try {
-      console.log('Creating offer for accepted call');
-      const offer = await peerConnectionRef.current.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: callType === 'video'
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      socketRef.current.emit('callSignal', {
+        signal: { type: 'offer', sdp: offer.sdp },
+        to: otherUser._id
       });
-      
-      await peerConnectionRef.current.setLocalDescription(offer);
-      console.log('Local description set to offer');
-      
-      // Wait a bit before sending the offer to ensure proper state
-      setTimeout(() => {
-        if (socketRef.current && socketRef.current.connected) {
-          socketRef.current.emit('callSignal', {
-            signal: { type: 'offer', sdp: offer.sdp },
-            to: data.from
-          });
-          console.log('Offer sent to:', data.from);
-        } else {
-          console.error('VideoCall: Cannot send offer - socket not available');
-        }
-      }, 100);
-      
     } catch (err) {
       console.error('Error creating offer:', err);
-      setError('Failed to create call offer: ' + err.message);
-      if (signalingTimeout) {
-        clearTimeout(signalingTimeout);
-        setSignalingTimeout(null);
-      }
+      setError('Failed to create call offer');
     }
   };
 
+  // Handle call rejected
   const handleCallRejected = () => {
-    console.log('Call was rejected');
-    
-    // Clear the timeout since we got a response
-    if (callRequestTimeout) {
-      clearTimeout(callRequestTimeout);
-      setCallRequestTimeout(null);
-    }
-    
     setError('Call was rejected');
     onClose();
   };
 
+  // Handle call ended
   const handleCallEnded = () => {
-    console.log('Call ended');
-    handleEndCall();
+    endCall();
   };
 
+  // Handle call signals
   const handleCallSignal = async (data) => {
     if (!peerConnectionRef.current) {
-      console.log('No peer connection available, creating one');
       createPeerConnection();
     }
 
+    const { signal } = data;
+    
     try {
-      const { signal } = data;
-      console.log('Received signal:', signal.type, 'Current state:', peerConnectionRef.current.signalingState, 'Is incoming call:', isIncomingCallState);
-      
       if (signal.type === 'offer') {
-        // Handle offer - this should only happen for the callee
-        if (isIncomingCallState && peerConnectionRef.current.signalingState === 'stable') {
-          console.log('Setting remote description (offer) as callee');
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
-          console.log('Remote description set to offer');
-          
-          console.log('Creating answer as callee');
-          const answer = await peerConnectionRef.current.createAnswer();
-          await peerConnectionRef.current.setLocalDescription(answer);
-          console.log('Local description set to answer');
-          
-          // Add any pending candidates
-          while (pendingCandidatesRef.current.length > 0) {
-            const candidate = pendingCandidatesRef.current.shift();
-            if (candidate.type === 'candidate') {
-              try {
-                await peerConnectionRef.current.addIceCandidate(candidate);
-                console.log('Added pending candidate');
-              } catch (err) {
-                console.error('Error adding pending candidate:', err);
-              }
-            }
-          }
-          
-          console.log('Sending answer as callee');
-          if (socketRef.current && socketRef.current.connected) {
-            socketRef.current.emit('callSignal', {
-              signal: { type: 'answer', sdp: answer.sdp },
-              to: data.from
-            });
-            console.log('Answer sent to:', data.from);
-          } else {
-            console.error('VideoCall: Cannot send answer - socket not available');
-          }
-        } else if (!isIncomingCallState) {
-          console.warn('Received offer but we are the caller - ignoring');
-        } else {
-          console.warn('Ignoring offer: not in stable state, current state:', peerConnectionRef.current.signalingState);
-          // Store the offer for later if we're not in stable state
-          pendingCandidatesRef.current.push({ type: 'offer', signal });
-        }
+        // Callee receives offer
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
+        
+        const answer = await peerConnectionRef.current.createAnswer();
+        await peerConnectionRef.current.setLocalDescription(answer);
+        
+        socketRef.current.emit('callSignal', {
+          signal: { type: 'answer', sdp: answer.sdp },
+          to: otherUser._id
+        });
       } else if (signal.type === 'answer') {
-        // Handle answer - this should only happen for the caller
-        if (!isIncomingCallState && peerConnectionRef.current.signalingState === 'have-local-offer') {
-          console.log('Setting remote description (answer) as caller');
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
-          console.log('Remote description set to answer');
-          
-          // Add any pending candidates
-          while (pendingCandidatesRef.current.length > 0) {
-            const candidate = pendingCandidatesRef.current.shift();
-            if (candidate.type === 'candidate') {
-              try {
-                await peerConnectionRef.current.addIceCandidate(candidate);
-                console.log('Added pending candidate');
-              } catch (err) {
-                console.error('Error adding pending candidate:', err);
-              }
-            }
-          }
-        } else if (isIncomingCallState) {
-          console.warn('Received answer but we are the callee - ignoring');
-        } else {
-          console.warn('Skipping setRemoteDescription(answer): wrong signaling state', peerConnectionRef.current.signalingState);
-          // Store the answer for later if we're not in the right state
-          pendingCandidatesRef.current.push({ type: 'answer', signal });
-        }
+        // Caller receives answer
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
       } else if (signal.type === 'candidate') {
         // Handle ICE candidate
-        console.log('Adding ICE candidate');
         if (peerConnectionRef.current.remoteDescription) {
-          try {
-            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
-            console.log('ICE candidate added successfully');
-          } catch (err) {
-            console.error('Error adding ICE candidate:', err);
-          }
-        } else {
-          console.log('Storing candidate for later - no remote description yet');
-          pendingCandidatesRef.current.push({ type: 'candidate', candidate: signal.candidate });
+          await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
         }
       }
     } catch (err) {
       console.error('Error handling signal:', err);
-      setError('Connection error occurred: ' + err.message);
     }
   };
 
-  const handleUserBusy = (data) => {
-    console.log('User is busy:', data);
-    
-    // Clear the timeout since we got a response
-    if (callRequestTimeout) {
-      clearTimeout(callRequestTimeout);
-      setCallRequestTimeout(null);
+  // End call
+  const endCall = () => {
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
     }
-    
-    setError(data.reason || 'User is busy');
-    onClose();
-  };
-
-  const initiateCall = async () => {
-    try {
-      console.log('VideoCall: Initiating call to:', otherUser._id);
-      console.log('VideoCall: Current user:', currentUser._id);
-      console.log('VideoCall: Call type:', callType);
-      setIsConnecting(true);
-      setIsInitiator(true);
-      
-      // Ensure socket is available
-      if (!socketRef.current) {
-        console.log('VideoCall: Socket not available, attempting to connect...');
-        try {
-          const socket = await getSocket();
-          socketRef.current = socket;
-        } catch (socketErr) {
-          console.error('VideoCall: Failed to connect socket:', socketErr);
-          setError('Failed to connect to server. Please check your connection and try again.');
-          setIsConnecting(false);
-          return;
-        }
-      }
-      
-      // Send the call request
-      console.log('VideoCall: Sending callRequest event');
-      if (socketRef.current && socketRef.current.connected) {
-        console.log('VideoCall: Socket is connected, emitting callRequest');
-        socketRef.current.emit('callRequest', {
-          to: otherUser._id,
-          from: currentUser._id,
-          type: callType
-        });
-        console.log('VideoCall: callRequest event emitted successfully');
-      } else {
-        console.error('VideoCall: Socket is not connected');
-        setError('Socket connection not available. Please refresh the page and try again.');
-        setIsConnecting(false);
-        return;
-      }
-      
-      // Create peer connection after sending request
-      createPeerConnection();
-      
-    } catch (err) {
-      console.error('VideoCall: Call initiation error:', err);
-      setError('Failed to initiate call. Please try again.');
-      setIsConnecting(false);
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
     }
-  };
-
-  const acceptCall = () => {
-    console.log('VideoCall: Accept call function called (this should not happen)');
-    // This function should not be called directly from VideoCall
-    // CallManager handles the acceptance
-  };
-
-  const rejectCall = () => {
-    console.log('VideoCall: Reject call function called (this should not happen)');
-    // This function should not be called directly from VideoCall
-    // CallManager handles the rejection
-  };
-
-  const handleEndCall = () => {
-    console.log('Ending call');
-    cleanup();
-    setIsCallActive(false);
-    setIsConnecting(false);
-    setRemoteStream(null);
-    
-    const targetUserId = isIncomingCallState ? caller._id : otherUser._id;
-    if (targetUserId && socketRef.current && socketRef.current.connected) {
+    if (socketRef.current) {
       socketRef.current.emit('callEnded', {
-        to: targetUserId,
+        to: otherUser._id,
         from: currentUser._id
       });
-    } else if (targetUserId) {
-      console.error('VideoCall: Cannot end call - socket not available');
     }
-    
-    endCallContext();
     onClose();
   };
 
+  // Toggle mute
   const toggleMute = () => {
     if (localStream) {
       const audioTrack = localStream.getAudioTracks()[0];
@@ -565,6 +213,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     }
   };
 
+  // Toggle video
   const toggleVideo = () => {
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
@@ -573,43 +222,6 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
         setIsVideoOff(!videoTrack.enabled);
       }
     }
-  };
-
-  // Auto-initiate call if not incoming
-  useEffect(() => {
-    if (!isIncomingCallState && !isCallActive && !isConnecting) {
-      console.log('VideoCall: Auto-initiating call (outgoing)');
-      initiateCall();
-    } else if (isIncomingCallState) {
-      console.log('VideoCall: Incoming call detected, setting up for incoming call');
-      // For incoming calls, we need to ensure the peer connection is created
-      // but we don't initiate the call ourselves - we wait for the offer
-      if (!peerConnectionRef.current) {
-        console.log('VideoCall: Creating peer connection for incoming call');
-        createPeerConnection();
-      }
-    }
-  }, [isIncomingCallState, isCallActive, isConnecting]);
-
-  // Debug panel for troubleshooting
-  const DebugPanel = () => {
-    if (!import.meta.env.DEV) return null;
-    
-    return (
-      <div className="absolute top-4 left-4 bg-black bg-opacity-75 text-white p-4 rounded text-xs max-w-xs">
-        <h4 className="font-bold mb-2">Debug Info</h4>
-        <div>Socket: {socketRef.current?.connected ? 'Connected' : 'Disconnected'}</div>
-        <div>Connection State: {connectionState}</div>
-        <div>Is Initiator: {isInitiator ? 'Yes' : 'No'}</div>
-        <div>Local Stream: {localStream ? 'Active' : 'None'}</div>
-        <div>Remote Stream: {remoteStream ? 'Active' : 'None'}</div>
-        <div>Peer Connection: {peerConnectionRef.current ? 'Active' : 'None'}</div>
-        {peerConnectionRef.current && (
-          <div>Signaling State: {peerConnectionRef.current.signalingState}</div>
-        )}
-        <div>Pending Candidates: {pendingCandidatesRef.current.length}</div>
-      </div>
-    );
   };
 
   if (error) {
@@ -629,13 +241,8 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     );
   }
 
-  // Don't show incoming call dialog here - CallManager handles that
-  // Just show the video call interface
   return (
     <div className="fixed inset-0 bg-black flex flex-col z-50">
-      {/* Debug Panel */}
-      <DebugPanel />
-      
       {/* Remote Video */}
       <div className="flex-1 relative">
         {remoteStream ? (
@@ -652,16 +259,6 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
               <p className="text-lg">
                 {isConnecting ? 'Connecting...' : 'Waiting for connection...'}
               </p>
-              <p className="text-sm text-gray-400 mt-2">
-                {connectionState === 'connecting' && 'Establishing connection...'}
-                {connectionState === 'connected' && 'Connected!'}
-                {connectionState === 'failed' && 'Connection failed'}
-              </p>
-              {isIncomingCallState && (
-                <p className="text-sm text-blue-400 mt-2">
-                  Incoming call from {caller?.username || 'Unknown'}
-                </p>
-              )}
             </div>
           </div>
         )}
@@ -700,7 +297,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           )}
           
           <button
-            onClick={handleEndCall}
+            onClick={endCall}
             className="p-3 rounded-full bg-red-600 text-white hover:bg-red-700"
           >
             📞
