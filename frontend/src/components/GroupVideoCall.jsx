@@ -35,9 +35,8 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   useEffect(() => {
     const initializeCall = async () => {
       try {
-        const socket = await getSocket();
-        socketRef.current = socket;
-
+        console.log('GroupVideoCall: Initializing call...');
+        
         // Get user media
         const stream = await navigator.mediaDevices.getUserMedia({
           video: callType === 'video',
@@ -48,6 +47,12 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+
+        // Connect to socket
+        console.log('GroupVideoCall: Connecting to socket...');
+        const socket = await getSocket();
+        socketRef.current = socket;
+        console.log('GroupVideoCall: Socket connected successfully');
 
         // Socket event listeners
         const setupEventListeners = () => {
@@ -61,19 +66,23 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
         };
 
         setupEventListeners();
+        console.log('GroupVideoCall: Event listeners set up successfully');
 
         return () => {
-          socket.off('groupCallRequest', handleIncomingGroupCall);
-          socket.off('groupCallAccepted', handleGroupCallAccepted);
-          socket.off('groupCallRejected', handleGroupCallRejected);
-          socket.off('groupCallEnded', handleGroupCallEnded);
-          socket.off('groupCallSignal', handleGroupCallSignal);
-          socket.off('userJoinedGroupCall', handleUserJoinedGroupCall);
-          socket.off('userLeftGroupCall', handleUserLeftGroupCall);
+          console.log('GroupVideoCall: Cleaning up event listeners');
+          if (socket) {
+            socket.off('groupCallRequest', handleIncomingGroupCall);
+            socket.off('groupCallAccepted', handleGroupCallAccepted);
+            socket.off('groupCallRejected', handleGroupCallRejected);
+            socket.off('groupCallEnded', handleGroupCallEnded);
+            socket.off('groupCallSignal', handleGroupCallSignal);
+            socket.off('userJoinedGroupCall', handleUserJoinedGroupCall);
+            socket.off('userLeftGroupCall', handleUserLeftGroupCall);
+          }
         };
       } catch (err) {
-        setError('Failed to access camera/microphone. Please check permissions.');
-        console.error('Media access error:', err);
+        console.error('GroupVideoCall: Initialization error:', err);
+        setError('Failed to initialize group call. Please check your connection and try again.');
       }
     };
 
@@ -128,12 +137,14 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
         console.log('Sending ICE candidate to:', targetUserId);
-        if (socketRef.current) {
+        if (socketRef.current && socketRef.current.connected) {
           socketRef.current.emit('groupCallSignal', {
             signal: { type: 'candidate', candidate: event.candidate },
             to: targetUserId,
             roomId: room._id
           });
+        } else {
+          console.error('GroupVideoCall: Cannot send ICE candidate - socket not available');
         }
       }
     };
@@ -202,12 +213,14 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
         
         // Wait a bit before sending the offer to ensure proper state
         setTimeout(() => {
-          if (socketRef.current) {
+          if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit('groupCallSignal', {
               signal: { type: 'offer', sdp: offer.sdp },
               to: data.from,
               roomId: room._id
             });
+          } else {
+            console.error('GroupVideoCall: Cannot send offer - socket not available');
           }
         }, 100);
       } else {
@@ -263,12 +276,14 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
           
           console.log('Sending answer to', data.from);
-          if (socketRef.current) {
+          if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit('groupCallSignal', {
               signal: { type: 'answer', sdp: answer.sdp },
               to: data.from,
               roomId: room._id
             });
+          } else {
+            console.error('GroupVideoCall: Cannot send answer - socket not available');
           }
         } else {
           console.warn('Ignoring offer: not in stable state for', data.from);
@@ -351,17 +366,38 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
       setIsConnecting(true);
       setIsInitiator(true);
       
-      if (socketRef.current) {
+      // Ensure socket is available
+      if (!socketRef.current) {
+        console.log('GroupVideoCall: Socket not available, attempting to connect...');
+        try {
+          const socket = await getSocket();
+          socketRef.current = socket;
+        } catch (socketErr) {
+          console.error('GroupVideoCall: Failed to connect socket:', socketErr);
+          setError('Failed to connect to server. Please check your connection and try again.');
+          setIsConnecting(false);
+          return;
+        }
+      }
+      
+      if (socketRef.current && socketRef.current.connected) {
+        console.log('GroupVideoCall: Socket is connected, emitting groupCallRequest');
         socketRef.current.emit('groupCallRequest', {
           roomId: room._id,
           from: currentUser._id,
           type: callType
         });
+        console.log('GroupVideoCall: groupCallRequest event emitted successfully');
+      } else {
+        console.error('GroupVideoCall: Socket is not connected');
+        setError('Socket connection not available. Please refresh the page and try again.');
+        setIsConnecting(false);
       }
       
     } catch (err) {
-      setError('Failed to initiate group call');
       console.error('Group call initiation error:', err);
+      setError('Failed to initiate group call. Please try again.');
+      setIsConnecting(false);
     }
   };
 
@@ -371,24 +407,29 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
     setIsConnecting(true);
     setIsInitiator(false);
     
-    if (socketRef.current) {
+    if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('groupCallAccepted', {
         roomId: room._id,
         to: caller._id,
         from: currentUser._id
       });
+    } else {
+      console.error('GroupVideoCall: Cannot accept call - socket not available');
+      setError('Socket connection not available. Please refresh the page and try again.');
     }
   };
 
   const rejectGroupCall = () => {
     console.log('Rejecting group call');
     setIsIncomingCall(false);
-    if (socketRef.current) {
+    if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('groupCallRejected', {
         roomId: room._id,
         to: caller._id,
         from: currentUser._id
       });
+    } else {
+      console.error('GroupVideoCall: Cannot reject call - socket not available');
     }
     onClose();
   };
@@ -400,11 +441,13 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
     setIsConnecting(false);
     setRemoteStreams(new Map());
     
-    if (socketRef.current) {
+    if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('groupCallEnded', {
         roomId: room._id,
         from: currentUser._id
       });
+    } else {
+      console.error('GroupVideoCall: Cannot end call - socket not available');
     }
     
     endCall();

@@ -37,11 +37,8 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   useEffect(() => {
     const initializeCall = async () => {
       try {
-        const socket = await getSocket();
-        socketRef.current = socket;
-
-        console.log('VideoCall: Socket connected, setting up event listeners');
-
+        console.log('VideoCall: Initializing call...');
+        
         // Get user media first
         if (!localStream) {
           try {
@@ -67,6 +64,12 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           }
         }
 
+        // Connect to socket
+        console.log('VideoCall: Connecting to socket...');
+        const socket = await getSocket();
+        socketRef.current = socket;
+        console.log('VideoCall: Socket connected successfully');
+
         // Set up socket event listeners
         const setupEventListeners = () => {
           socket.on('callAccepted', handleCallAccepted);
@@ -78,21 +81,22 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
         };
 
         setupEventListeners();
-
         console.log('VideoCall: Event listeners set up successfully');
 
         return () => {
           console.log('VideoCall: Cleaning up event listeners');
-          socket.off('callAccepted', handleCallAccepted);
-          socket.off('callRejected', handleCallRejected);
-          socket.off('callEnded', handleCallEnded);
-          socket.off('callSignal', handleCallSignal);
-          socket.off('userBusy', handleUserBusy);
-          socket.off('callRequestSent', handleCallRequestSent);
+          if (socket) {
+            socket.off('callAccepted', handleCallAccepted);
+            socket.off('callRejected', handleCallRejected);
+            socket.off('callEnded', handleCallEnded);
+            socket.off('callSignal', handleCallSignal);
+            socket.off('userBusy', handleUserBusy);
+            socket.off('callRequestSent', handleCallRequestSent);
+          }
         };
       } catch (err) {
-        console.error('Socket connection error:', err);
-        setError('Failed to connect to server. Please try again.');
+        console.error('VideoCall: Initialization error:', err);
+        setError('Failed to initialize call. Please check your connection and try again.');
       }
     };
 
@@ -155,11 +159,13 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
       if (event.candidate) {
         console.log('Sending ICE candidate');
         const targetUserId = isInitiator ? otherUser._id : (caller ? caller._id : null);
-        if (targetUserId && socketRef.current) {
+        if (targetUserId && socketRef.current && socketRef.current.connected) {
           socketRef.current.emit('callSignal', {
             signal: { type: 'candidate', candidate: event.candidate },
             to: targetUserId
           });
+        } else if (targetUserId) {
+          console.error('VideoCall: Cannot send ICE candidate - socket not available');
         }
       }
     };
@@ -235,11 +241,13 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
       
       // Wait a bit before sending the offer to ensure proper state
       setTimeout(() => {
-        if (socketRef.current) {
+        if (socketRef.current && socketRef.current.connected) {
           socketRef.current.emit('callSignal', {
             signal: { type: 'offer', sdp: offer.sdp },
             to: data.from
           });
+        } else {
+          console.error('VideoCall: Cannot send offer - socket not available');
         }
       }, 100);
       
@@ -298,11 +306,13 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           }
           
           console.log('Sending answer');
-          if (socketRef.current) {
+          if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit('callSignal', {
               signal: { type: 'answer', sdp: answer.sdp },
               to: data.from
             });
+          } else {
+            console.error('VideoCall: Cannot send answer - socket not available');
           }
         } else {
           console.warn('Ignoring offer: not in stable state');
@@ -366,10 +376,24 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
       setIsConnecting(true);
       setIsInitiator(true);
       
-      // First send the call request
+      // Ensure socket is available
+      if (!socketRef.current) {
+        console.log('VideoCall: Socket not available, attempting to connect...');
+        try {
+          const socket = await getSocket();
+          socketRef.current = socket;
+        } catch (socketErr) {
+          console.error('VideoCall: Failed to connect socket:', socketErr);
+          setError('Failed to connect to server. Please check your connection and try again.');
+          setIsConnecting(false);
+          return;
+        }
+      }
+      
+      // Send the call request
       console.log('VideoCall: Sending callRequest event');
-      if (socketRef.current) {
-        console.log('VideoCall: Socket is available, emitting callRequest');
+      if (socketRef.current && socketRef.current.connected) {
+        console.log('VideoCall: Socket is connected, emitting callRequest');
         socketRef.current.emit('callRequest', {
           to: otherUser._id,
           from: currentUser._id,
@@ -377,8 +401,9 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
         });
         console.log('VideoCall: callRequest event emitted successfully');
       } else {
-        console.error('VideoCall: Socket is not available');
-        setError('Socket connection not available');
+        console.error('VideoCall: Socket is not connected');
+        setError('Socket connection not available. Please refresh the page and try again.');
+        setIsConnecting(false);
         return;
       }
       
@@ -386,8 +411,9 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
       createPeerConnection();
       
     } catch (err) {
-      setError('Failed to initiate call');
-      console.error('Call initiation error:', err);
+      console.error('VideoCall: Call initiation error:', err);
+      setError('Failed to initiate call. Please try again.');
+      setIsConnecting(false);
     }
   };
 
@@ -398,22 +424,27 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     setIsInitiator(false);
     createPeerConnection();
     
-    if (socketRef.current) {
+    if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('callAccepted', {
         to: caller._id,
         from: currentUser._id
       });
+    } else {
+      console.error('VideoCall: Cannot accept call - socket not available');
+      setError('Socket connection not available. Please refresh the page and try again.');
     }
   };
 
   const rejectCall = () => {
     console.log('Rejecting call');
     setIsIncomingCallState(false);
-    if (socketRef.current) {
+    if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('callRejected', {
         to: caller._id,
         from: currentUser._id
       });
+    } else {
+      console.error('VideoCall: Cannot reject call - socket not available');
     }
     onClose();
   };
@@ -426,11 +457,13 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     setRemoteStream(null);
     
     const targetUserId = isIncomingCallState ? caller._id : otherUser._id;
-    if (targetUserId && socketRef.current) {
+    if (targetUserId && socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('callEnded', {
         to: targetUserId,
         from: currentUser._id
       });
+    } else if (targetUserId) {
+      console.error('VideoCall: Cannot end call - socket not available');
     }
     
     endCallContext();

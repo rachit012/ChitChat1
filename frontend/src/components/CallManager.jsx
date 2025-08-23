@@ -12,8 +12,10 @@ const CallManager = ({ currentUser }) => {
   useEffect(() => {
     const initializeCallManager = async () => {
       try {
+        console.log('CallManager: Initializing...');
         const socketInstance = await getSocket();
         setSocket(socketInstance);
+        console.log('CallManager: Socket connected successfully');
 
         console.log('CallManager: Setting up global call event listeners');
 
@@ -35,10 +37,12 @@ const CallManager = ({ currentUser }) => {
           } else {
             console.log('CallManager: User is busy, sending busy signal');
             // Send busy signal if already in a call
-            socketInstance.emit('userBusy', {
-              to: data.caller._id,
-              from: currentUser._id
-            });
+            if (socketInstance && socketInstance.connected) {
+              socketInstance.emit('userBusy', {
+                to: data.caller._id,
+                from: currentUser._id
+              });
+            }
           }
         };
 
@@ -54,10 +58,12 @@ const CallManager = ({ currentUser }) => {
             });
           } else {
             // Send busy signal if already in a call
-            socketInstance.emit('userBusy', {
-              to: data.caller._id,
-              from: currentUser._id
-            });
+            if (socketInstance && socketInstance.connected) {
+              socketInstance.emit('userBusy', {
+                to: data.caller._id,
+                from: currentUser._id
+              });
+            }
           }
         };
 
@@ -107,67 +113,68 @@ const CallManager = ({ currentUser }) => {
 
         return () => {
           console.log('CallManager: Cleaning up global call event listeners');
-          socketInstance.off('callRequest', handleCallRequest);
-          socketInstance.off('groupCallRequest', handleGroupCallRequest);
-          socketInstance.off('callAccepted', handleCallAccepted);
-          socketInstance.off('callRejected', handleCallRejected);
-          socketInstance.off('callEnded', handleCallEnded);
-          socketInstance.off('groupCallAccepted', handleGroupCallAccepted);
-          socketInstance.off('groupCallRejected', handleGroupCallRejected);
-          socketInstance.off('groupCallEnded', handleGroupCallEnded);
+          if (socketInstance) {
+            socketInstance.off('callRequest', handleCallRequest);
+            socketInstance.off('groupCallRequest', handleGroupCallRequest);
+            socketInstance.off('callAccepted', handleCallAccepted);
+            socketInstance.off('callRejected', handleCallRejected);
+            socketInstance.off('callEnded', handleCallEnded);
+            socketInstance.off('groupCallAccepted', handleGroupCallAccepted);
+            socketInstance.off('groupCallRejected', handleGroupCallRejected);
+            socketInstance.off('groupCallEnded', handleGroupCallEnded);
+          }
         };
       } catch (err) {
         console.error('CallManager: Failed to initialize:', err);
       }
     };
 
-    initializeCallManager();
-  }, [currentUser._id, isCallActive, startCall, endCall]);
+    if (currentUser && currentUser._id) {
+      initializeCallManager();
+    }
+  }, [currentUser?._id, isCallActive, startCall, endCall]);
 
   const handleAcceptCall = () => {
-    if (incomingCall) {
+    if (incomingCall && socket && socket.connected) {
       if (incomingCall.isGroupCall) {
         // Handle group call acceptance
-        if (socket) {
-          socket.emit('groupCallAccepted', {
-            roomId: incomingCall.roomId,
-            to: incomingCall.caller._id,
-            from: currentUser._id
-          });
-        }
+        socket.emit('groupCallAccepted', {
+          roomId: incomingCall.roomId,
+          to: incomingCall.caller._id,
+          from: currentUser._id
+        });
       } else {
         // Handle individual call acceptance
-        if (socket) {
-          socket.emit('callAccepted', {
-            to: incomingCall.caller._id,
-            from: currentUser._id
-          });
-        }
+        socket.emit('callAccepted', {
+          to: incomingCall.caller._id,
+          from: currentUser._id
+        });
       }
       setIncomingCall(null);
+    } else {
+      console.error('CallManager: Cannot accept call - socket not available or call not available');
     }
   };
 
   const handleRejectCall = () => {
-    if (incomingCall) {
+    if (incomingCall && socket && socket.connected) {
       if (incomingCall.isGroupCall) {
         // Handle group call rejection
-        if (socket) {
-          socket.emit('groupCallRejected', {
-            roomId: incomingCall.roomId,
-            to: incomingCall.caller._id,
-            from: currentUser._id
-          });
-        }
+        socket.emit('groupCallRejected', {
+          roomId: incomingCall.roomId,
+          to: incomingCall.caller._id,
+          from: currentUser._id
+        });
       } else {
         // Handle individual call rejection
-        if (socket) {
-          socket.emit('callRejected', {
-            to: incomingCall.caller._id,
-            from: currentUser._id
-          });
-        }
+        socket.emit('callRejected', {
+          to: incomingCall.caller._id,
+          from: currentUser._id
+        });
       }
+      setIncomingCall(null);
+    } else {
+      console.error('CallManager: Cannot reject call - socket not available or call not available');
       setIncomingCall(null);
     }
   };
