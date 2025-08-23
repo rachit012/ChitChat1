@@ -16,6 +16,17 @@ const CallManager = ({ currentUser }) => {
         // Handle incoming call requests
         const handleCallRequest = (data) => {
           console.log('Received call request:', data);
+          
+          // Don't show incoming call if there's already an active call
+          if (activeCall) {
+            console.log('Already in a call, rejecting incoming call');
+            socketInstance.emit('callRejected', {
+              to: data.caller._id,
+              from: currentUser._id
+            });
+            return;
+          }
+          
           setIncomingCall({
             caller: data.caller,
             type: data.type
@@ -64,7 +75,7 @@ const CallManager = ({ currentUser }) => {
     if (currentUser && currentUser._id) {
       initializeCallManager();
     }
-  }, [currentUser?._id]);
+  }, [currentUser?._id, activeCall]);
 
   const handleAcceptCall = () => {
     if (incomingCall && socket) {
