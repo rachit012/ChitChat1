@@ -9,18 +9,12 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const [error, setError] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
-  const [hasCreatedOffer, setHasCreatedOffer] = useState(false);
-  const [hasCreatedAnswer, setHasCreatedAnswer] = useState(false);
 
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
   const peerConnectionRef = useRef();
   const socketRef = useRef();
-
-  // Simple ICE servers
-  const iceServers = [
-    { urls: 'stun:stun.l.google.com:19302' }
-  ];
+  const pendingCandidatesRef = useRef([]);
 
   // Initialize call
   useEffect(() => {
@@ -68,7 +62,9 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
 
   // Create peer connection
   const createPeerConnection = () => {
-    const pc = new RTCPeerConnection({ iceServers });
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
     
     // Add local stream
     if (localStream) {
@@ -131,7 +127,6 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      setHasCreatedOffer(true);
       
       socketRef.current.emit('callSignal', {
         signal: { type: 'offer', sdp: offer.sdp },
@@ -156,44 +151,62 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
 
   // Handle call signals
   const handleCallSignal = async (data) => {
-    if (!peerConnectionRef.current) {
-      createPeerConnection();
-    }
-
     const { signal } = data;
-    const pc = peerConnectionRef.current;
     
     try {
       if (signal.type === 'offer') {
-        // Only callee should handle offers
-        if (isIncomingCallProp && !hasCreatedAnswer && pc.signalingState === 'stable') {
-          console.log('Callee: Setting remote description (offer)');
-          await pc.setRemoteDescription(new RTCSessionDescription(signal));
-          
-          console.log('Callee: Creating answer');
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          setHasCreatedAnswer(true);
-          
-          socketRef.current.emit('callSignal', {
-            signal: { type: 'answer', sdp: answer.sdp },
-            to: otherUser._id
-          });
-        } else {
-          console.log('Ignoring offer - wrong state or role');
+        // Callee receives offer
+        if (!isIncomingCallProp) return; // Only callee should handle offers
+        
+        const pc = createPeerConnection();
+        
+        await pc.setRemoteDescription(new RTCSessionDescription(signal));
+        
+        // Add any pending candidates
+        while (pendingCandidatesRef.current.length > 0) {
+          const candidate = pendingCandidatesRef.current.shift();
+          try {
+            await pc.addIceCandidate(candidate);
+          } catch (err) {
+            console.error('Error adding pending candidate:', err);
+          }
         }
+        
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        
+        socketRef.current.emit('callSignal', {
+          signal: { type: 'answer', sdp: answer.sdp },
+          to: otherUser._id
+        });
       } else if (signal.type === 'answer') {
-        // Only caller should handle answers
-        if (!isIncomingCallProp && hasCreatedOffer && pc.signalingState === 'have-local-offer') {
-          console.log('Caller: Setting remote description (answer)');
-          await pc.setRemoteDescription(new RTCSessionDescription(signal));
-        } else {
-          console.log('Ignoring answer - wrong state or role');
+        // Caller receives answer
+        if (isIncomingCallProp) return; // Only caller should handle answers
+        
+        if (peerConnectionRef.current) {
+          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
+          
+          // Add any pending candidates
+          while (pendingCandidatesRef.current.length > 0) {
+            const candidate = pendingCandidatesRef.current.shift();
+            try {
+              await peerConnectionRef.current.addIceCandidate(candidate);
+            } catch (err) {
+              console.error('Error adding pending candidate:', err);
+            }
+          }
         }
       } else if (signal.type === 'candidate') {
         // Handle ICE candidate
-        if (pc.remoteDescription) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription) {
+          try {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          } catch (err) {
+            console.error('Error adding ICE candidate:', err);
+          }
+        } else {
+          // Store for later
+          pendingCandidatesRef.current.push(new RTCIceCandidate(signal.candidate));
         }
       }
     } catch (err) {
