@@ -122,12 +122,16 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const handleCallAccepted = async (data) => {
     if (isIncomingCallProp) return; // Only caller handles this
     
+    console.log('Caller: Call accepted, creating offer');
+    setIsConnecting(true);
+    
     const pc = createPeerConnection();
     
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       
+      console.log('Caller: Sending offer to callee');
       socketRef.current.emit('callSignal', {
         signal: { type: 'offer', sdp: offer.sdp },
         to: otherUser._id

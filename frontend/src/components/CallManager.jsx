@@ -17,9 +17,9 @@ const CallManager = ({ currentUser }) => {
         const handleCallRequest = (data) => {
           console.log('Received call request:', data);
           
-          // Don't show incoming call if there's already an active call
-          if (activeCall) {
-            console.log('Already in a call, rejecting incoming call');
+          // Don't show incoming call if there's already an active call or incoming call
+          if (activeCall || incomingCall) {
+            console.log('Already in a call or have incoming call, rejecting');
             socketInstance.emit('callRejected', {
               to: data.caller._id,
               from: currentUser._id
@@ -35,7 +35,7 @@ const CallManager = ({ currentUser }) => {
 
         // Handle call accepted (for caller)
         const handleCallAccepted = (data) => {
-          console.log('Call accepted:', data);
+          console.log('CallManager: Call accepted event received:', data);
           setActiveCall({
             otherUser: { _id: data.from },
             type: 'video',
@@ -45,12 +45,14 @@ const CallManager = ({ currentUser }) => {
 
         // Handle call rejected
         const handleCallRejected = () => {
+          console.log('CallManager: Call rejected event received');
           setIncomingCall(null);
           setActiveCall(null);
         };
 
         // Handle call ended
         const handleCallEnded = () => {
+          console.log('CallManager: Call ended event received');
           setIncomingCall(null);
           setActiveCall(null);
         };
@@ -78,18 +80,22 @@ const CallManager = ({ currentUser }) => {
   }, [currentUser?._id, activeCall]);
 
   const handleAcceptCall = () => {
+    console.log('CallManager: Accepting call, incomingCall:', incomingCall);
     if (incomingCall && socket) {
+      console.log('CallManager: Sending callAccepted event');
       socket.emit('callAccepted', {
         to: incomingCall.caller._id,
         from: currentUser._id
       });
       
+      console.log('CallManager: Setting active call');
       setActiveCall({
         otherUser: incomingCall.caller,
         type: incomingCall.type,
         isIncoming: true
       });
       
+      console.log('CallManager: Clearing incoming call');
       setIncomingCall(null);
     }
   };
