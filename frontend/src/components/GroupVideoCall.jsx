@@ -241,6 +241,12 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
   const handleGroupCallAccepted = async (data) => {
     console.log('Group call accepted by:', data.from);
     
+    // Only the caller should handle this event
+    if (isIncomingCall) {
+      console.log('Ignoring groupCallAccepted event - we are the callee');
+      return;
+    }
+    
     // Clear the timeout since we got a response
     if (callRequestTimeout) {
       clearTimeout(callRequestTimeout);
@@ -316,16 +322,16 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
 
     try {
       const { signal } = data;
-      console.log('Received signal from', data.from, ':', signal.type, 'Current state:', peerConnection.signalingState);
+      console.log('Received signal from', data.from, ':', signal.type, 'Current state:', peerConnection.signalingState, 'Is incoming call:', isIncomingCall);
       
       if (signal.type === 'offer') {
-        // Handle offer
-        if (peerConnection.signalingState === 'stable') {
-          console.log('Setting remote description (offer) for', data.from);
+        // Handle offer - this should only happen for the callee
+        if (isIncomingCall && peerConnection.signalingState === 'stable') {
+          console.log('Setting remote description (offer) for', data.from, 'as callee');
           await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
           console.log('Remote description set to offer for', data.from);
           
-          console.log('Creating answer for', data.from);
+          console.log('Creating answer for', data.from, 'as callee');
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
           console.log('Local description set to answer for', data.from);
@@ -345,7 +351,7 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
           }
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
           
-          console.log('Sending answer to', data.from);
+          console.log('Sending answer to', data.from, 'as callee');
           if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit('groupCallSignal', {
               signal: { type: 'answer', sdp: answer.sdp },
@@ -356,6 +362,8 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
           } else {
             console.error('GroupVideoCall: Cannot send answer - socket not available');
           }
+        } else if (!isIncomingCall) {
+          console.warn('Received offer but we are the caller - ignoring for', data.from);
         } else {
           console.warn('Ignoring offer: not in stable state for', data.from, 'current state:', peerConnection.signalingState);
           // Store the offer for later if we're not in stable state
@@ -364,9 +372,9 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
         }
       } else if (signal.type === 'answer') {
-        // Handle answer
-        console.log('Setting remote description (answer) for', data.from);
-        if (peerConnection.signalingState === 'have-local-offer') {
+        // Handle answer - this should only happen for the caller
+        if (!isIncomingCall && peerConnection.signalingState === 'have-local-offer') {
+          console.log('Setting remote description (answer) for', data.from, 'as caller');
           await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
           console.log('Remote description set to answer for', data.from);
           
@@ -384,6 +392,8 @@ const GroupVideoCall = ({ currentUser, room, onClose, callType = 'video', isInco
             }
           }
           pendingCandidatesRef.current.set(data.from, pendingCandidates);
+        } else if (isIncomingCall) {
+          console.warn('Received answer but we are the callee - ignoring for', data.from);
         } else {
           console.warn('Skipping setRemoteDescription(answer): wrong signaling state', peerConnection.signalingState, 'for', data.from);
           // Store the answer for later if we're not in the right state

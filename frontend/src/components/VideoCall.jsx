@@ -282,6 +282,12 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const handleCallAccepted = async (data) => {
     console.log('Call accepted by:', data.from);
     
+    // Only the caller should handle this event
+    if (isIncomingCallState) {
+      console.log('Ignoring callAccepted event - we are the callee');
+      return;
+    }
+    
     // Clear the timeout since we got a response
     if (callRequestTimeout) {
       clearTimeout(callRequestTimeout);
@@ -363,16 +369,16 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
 
     try {
       const { signal } = data;
-      console.log('Received signal:', signal.type, 'Current state:', peerConnectionRef.current.signalingState);
+      console.log('Received signal:', signal.type, 'Current state:', peerConnectionRef.current.signalingState, 'Is incoming call:', isIncomingCallState);
       
       if (signal.type === 'offer') {
-        // Handle offer
-        if (peerConnectionRef.current.signalingState === 'stable') {
-          console.log('Setting remote description (offer)');
+        // Handle offer - this should only happen for the callee
+        if (isIncomingCallState && peerConnectionRef.current.signalingState === 'stable') {
+          console.log('Setting remote description (offer) as callee');
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
           console.log('Remote description set to offer');
           
-          console.log('Creating answer');
+          console.log('Creating answer as callee');
           const answer = await peerConnectionRef.current.createAnswer();
           await peerConnectionRef.current.setLocalDescription(answer);
           console.log('Local description set to answer');
@@ -380,15 +386,17 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           // Add any pending candidates
           while (pendingCandidatesRef.current.length > 0) {
             const candidate = pendingCandidatesRef.current.shift();
-            try {
-              await peerConnectionRef.current.addIceCandidate(candidate);
-              console.log('Added pending candidate');
-            } catch (err) {
-              console.error('Error adding pending candidate:', err);
+            if (candidate.type === 'candidate') {
+              try {
+                await peerConnectionRef.current.addIceCandidate(candidate);
+                console.log('Added pending candidate');
+              } catch (err) {
+                console.error('Error adding pending candidate:', err);
+              }
             }
           }
           
-          console.log('Sending answer');
+          console.log('Sending answer as callee');
           if (socketRef.current && socketRef.current.connected) {
             socketRef.current.emit('callSignal', {
               signal: { type: 'answer', sdp: answer.sdp },
@@ -398,15 +406,17 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           } else {
             console.error('VideoCall: Cannot send answer - socket not available');
           }
+        } else if (!isIncomingCallState) {
+          console.warn('Received offer but we are the caller - ignoring');
         } else {
           console.warn('Ignoring offer: not in stable state, current state:', peerConnectionRef.current.signalingState);
           // Store the offer for later if we're not in stable state
           pendingCandidatesRef.current.push({ type: 'offer', signal });
         }
       } else if (signal.type === 'answer') {
-        // Handle answer
-        console.log('Setting remote description (answer)');
-        if (peerConnectionRef.current.signalingState === 'have-local-offer') {
+        // Handle answer - this should only happen for the caller
+        if (!isIncomingCallState && peerConnectionRef.current.signalingState === 'have-local-offer') {
+          console.log('Setting remote description (answer) as caller');
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal));
           console.log('Remote description set to answer');
           
@@ -422,6 +432,8 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
               }
             }
           }
+        } else if (isIncomingCallState) {
+          console.warn('Received answer but we are the callee - ignoring');
         } else {
           console.warn('Skipping setRemoteDescription(answer): wrong signaling state', peerConnectionRef.current.signalingState);
           // Store the answer for later if we're not in the right state
@@ -571,7 +583,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     } else if (isIncomingCallState) {
       console.log('VideoCall: Incoming call detected, setting up for incoming call');
       // For incoming calls, we need to ensure the peer connection is created
-      // but we don't initiate the call ourselves
+      // but we don't initiate the call ourselves - we wait for the offer
       if (!peerConnectionRef.current) {
         console.log('VideoCall: Creating peer connection for incoming call');
         createPeerConnection();
