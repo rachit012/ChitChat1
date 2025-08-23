@@ -14,6 +14,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   const [error, setError] = useState(null);
   const [isInitiator, setIsInitiator] = useState(false);
   const [connectionState, setConnectionState] = useState('new');
+  const [callRequestTimeout, setCallRequestTimeout] = useState(null);
 
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
@@ -73,6 +74,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           socket.on('callEnded', handleCallEnded);
           socket.on('callSignal', handleCallSignal);
           socket.on('userBusy', handleUserBusy);
+          socket.on('callRequestSent', handleCallRequestSent);
         };
 
         setupEventListeners();
@@ -86,6 +88,7 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
           socket.off('callEnded', handleCallEnded);
           socket.off('callSignal', handleCallSignal);
           socket.off('userBusy', handleUserBusy);
+          socket.off('callRequestSent', handleCallRequestSent);
         };
       } catch (err) {
         console.error('Socket connection error:', err);
@@ -109,6 +112,12 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
       peerConnectionRef.current = null;
     }
     pendingCandidatesRef.current = [];
+    
+    // Clear any pending timeout
+    if (callRequestTimeout) {
+      clearTimeout(callRequestTimeout);
+      setCallRequestTimeout(null);
+    }
   };
 
   const createPeerConnection = () => {
@@ -189,8 +198,27 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     return peerConnection;
   };
 
+  const handleCallRequestSent = () => {
+    console.log('Call request sent successfully');
+    // Set a timeout to handle cases where the call request doesn't get a response
+    const timeout = setTimeout(() => {
+      console.log('Call request timeout - no response received');
+      setError('Call request timed out. The other user may be offline or not responding.');
+      setIsConnecting(false);
+    }, 30000); // 30 seconds timeout
+    
+    setCallRequestTimeout(timeout);
+  };
+
   const handleCallAccepted = async (data) => {
     console.log('Call accepted by:', data.from);
+    
+    // Clear the timeout since we got a response
+    if (callRequestTimeout) {
+      clearTimeout(callRequestTimeout);
+      setCallRequestTimeout(null);
+    }
+    
     setIsConnecting(true);
     setIsInitiator(true);
     
@@ -222,6 +250,14 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
   };
 
   const handleCallRejected = () => {
+    console.log('Call was rejected');
+    
+    // Clear the timeout since we got a response
+    if (callRequestTimeout) {
+      clearTimeout(callRequestTimeout);
+      setCallRequestTimeout(null);
+    }
+    
     setError('Call was rejected');
     onClose();
   };
@@ -309,25 +345,41 @@ const VideoCall = ({ currentUser, otherUser, onClose, callType = 'video', isInco
     }
   };
 
-  const handleUserBusy = () => {
-    setError('User is busy');
+  const handleUserBusy = (data) => {
+    console.log('User is busy:', data);
+    
+    // Clear the timeout since we got a response
+    if (callRequestTimeout) {
+      clearTimeout(callRequestTimeout);
+      setCallRequestTimeout(null);
+    }
+    
+    setError(data.reason || 'User is busy');
     onClose();
   };
 
   const initiateCall = async () => {
     try {
       console.log('VideoCall: Initiating call to:', otherUser._id);
+      console.log('VideoCall: Current user:', currentUser._id);
+      console.log('VideoCall: Call type:', callType);
       setIsConnecting(true);
       setIsInitiator(true);
       
       // First send the call request
       console.log('VideoCall: Sending callRequest event');
       if (socketRef.current) {
+        console.log('VideoCall: Socket is available, emitting callRequest');
         socketRef.current.emit('callRequest', {
           to: otherUser._id,
           from: currentUser._id,
           type: callType
         });
+        console.log('VideoCall: callRequest event emitted successfully');
+      } else {
+        console.error('VideoCall: Socket is not available');
+        setError('Socket connection not available');
+        return;
       }
       
       // Create peer connection after sending request

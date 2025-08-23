@@ -88,6 +88,7 @@ const Chat = () => {
       
       {/* Global Call Manager - always mounted to handle incoming calls */}
       {currentUser && <CallManager currentUser={currentUser} />}
+      
     </div>
   );
 };

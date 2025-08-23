@@ -20,7 +20,12 @@ const CallManager = ({ currentUser }) => {
         // Global call event listeners
         const handleCallRequest = (data) => {
           console.log('CallManager: Received callRequest event:', data);
+          console.log('CallManager: Current user ID:', currentUser._id);
+          console.log('CallManager: Caller ID:', data.caller._id);
+          console.log('CallManager: Is call active:', isCallActive);
+          
           if (!isCallActive) {
+            console.log('CallManager: Setting incoming call state');
             setIncomingCall({
               caller: data.caller,
               type: data.type,
@@ -28,6 +33,7 @@ const CallManager = ({ currentUser }) => {
               isGroupCall: false
             });
           } else {
+            console.log('CallManager: User is busy, sending busy signal');
             // Send busy signal if already in a call
             socketInstance.emit('userBusy', {
               to: data.caller._id,

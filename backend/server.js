@@ -516,18 +516,33 @@ io.on('connection', (socket) => {
   socket.on('callRequest', ({ to, from, type }) => {
     console.log(`Call request from ${from} to ${to}, type: ${type}`);
     
-    // Check if user is online by checking if they're in their room
-    const targetUser = Array.from(io.sockets.sockets.values()).find(s => s.userId === to);
+    // Check if user is online by checking if they're in their room and connected
+    const targetSocket = Array.from(io.sockets.sockets.values()).find(s => s.userId === to);
     
-    if (targetUser) {
+    if (targetSocket && targetSocket.connected) {
       console.log(`User ${to} is online, sending call request`);
+      console.log(`Target socket ID: ${targetSocket.id}, Connected: ${targetSocket.connected}`);
+      
+      // Send call request to the target user
       io.to(to).emit('callRequest', {
         caller: { _id: from, username: socket.username },
         type: type
       });
+      
+      // Also send confirmation to the caller that the request was sent
+      socket.emit('callRequestSent', {
+        to: to,
+        type: type
+      });
     } else {
-      console.log(`User ${to} is offline`);
-      socket.emit('userBusy', { to: from });
+      console.log(`User ${to} is offline or not connected`);
+      console.log(`Available users:`, Array.from(io.sockets.sockets.values()).map(s => ({ userId: s.userId, connected: s.connected })));
+      
+      // Send busy signal to the caller
+      socket.emit('userBusy', { 
+        to: from,
+        reason: 'User is offline or not connected'
+      });
     }
   });
 
